@@ -22,6 +22,7 @@
          put_object/3, put_object/4, put_object/5, put_object/6,
          set_object_acl/3, set_object_acl/4,
          make_link/3, make_link/4,
+         make_presigned_upload_url/4, make_presigned_upload_url/5,
          make_get_url/3, make_get_url/4,
          start_multipart/2, start_multipart/5,
          upload_part/5, upload_part/7,
@@ -693,15 +694,54 @@ set_object_acl(BucketName, Key, ACL, Config)
     XMLText = list_to_binary(xmerl:export_simple([XML], xmerl_xml)),
     s3_simple_request(Config, put, BucketName, [$/|Key], "acl", [], XMLText, []).
 
--spec sign_get(integer(), string(), string(), aws_config()) -> {binary(), string()}.
-sign_get(Expire_time, BucketName, Key, Config)
-  when is_integer(Expire_time), is_list(BucketName), is_list(Key) ->
+-spec to_sign(atom(), string(), string(), string(), string()) -> string().
+
+to_sign(Method, Expires, BucketName, Key, ContentType)
+  when is_atom(Method), is_list(Expires), is_list(BucketName), is_list(Key), is_list(ContentType) ->
+    case Method of 
+      'GET' -> lists:flatten(["GET\n\n", ContentType, "\n", Expires, "\n/", BucketName, "/", Key]);
+      'PUT' -> lists:flatten(["PUT\n\n", ContentType, "\n", Expires, "\n/", BucketName, "/", Key])
+    end.
+
+-spec sign_method(atom(), string(), string(), string(), aws_config()) -> {binary(), string()}.
+
+sign_method(Method, Expire_time, BucketName, Key, Config) ->
+  sign_method(Method, Expire_time, BucketName, Key, [], Config).
+
+-spec sign_method(atom(), string(), string(), string(), string(), aws_config()) -> {binary(), string()}.
+
+sign_method(Method, Expire_time, BucketName, Key, ContentType, Config)
+  when is_atom(Method), is_integer(Expire_time), is_list(BucketName), is_list(ContentType), is_list(Key) ->
     {Mega, Sec, _Micro} = os:timestamp(),
     Datetime = (Mega * 1000000) + Sec,
     Expires = integer_to_list(Expire_time + Datetime),
-    To_sign = lists:flatten(["GET\n\n\n", Expires, "\n/", BucketName, "/", Key]),
+    To_sign = to_sign(Method, Expires, BucketName, Key, ContentType),
     Sig = base64:encode(erlcloud_util:sha_mac(Config#aws_config.secret_access_key, To_sign)),
     {Sig, Expires}.
+
+-spec sign_get(integer(), string(), string(), aws_config()) -> {binary(), string()}.
+
+sign_get(Expire_time, BucketName, Key, Config)
+  when is_integer(Expire_time), is_list(BucketName), is_list(Key) ->
+    sign_method('GET', Expire_time, BucketName, Key, Config).
+
+-spec sign_get(integer(), string(), string(), string(), aws_config()) -> {binary(), string()}.
+
+sign_get(Expire_time, BucketName, Key, ContentType, Config)
+  when is_integer(Expire_time), is_list(BucketName), is_list(Key) ->
+    sign_method('GET', Expire_time, BucketName, Key, ContentType, Config).
+
+-spec sign_put(integer(), string(), string(), aws_config()) -> {binary(), string()}.
+
+sign_put(Expire_time, BucketName, Key, Config)
+  when is_integer(Expire_time), is_list(BucketName), is_list(Key) ->
+    sign_method('PUT', Expire_time, BucketName, Key, Config).
+
+-spec sign_put(integer(), string(), string(), string(), aws_config()) -> {binary(), string()}.
+
+sign_put(Expire_time, BucketName, Key, ContentType, Config)
+  when is_integer(Expire_time), is_list(BucketName), is_list(Key) ->
+    sign_method('PUT', Expire_time, BucketName, Key, ContentType, Config).
 
 -spec make_link(integer(), string(), string()) -> {integer(), string(), string()}.
 
@@ -713,6 +753,18 @@ make_link(Expire_time, BucketName, Key) ->
 make_link(Expire_time, BucketName, Key, Config) ->
     EncodedKey = erlcloud_http:url_encode_loose(Key),
     {Sig, Expires} = sign_get(Expire_time, BucketName, EncodedKey, Config),
+    Host = lists:flatten([Config#aws_config.s3_scheme, BucketName, ".", Config#aws_config.s3_host, port_spec(Config)]),
+    URI = lists:flatten(["/", EncodedKey, "?AWSAccessKeyId=", erlcloud_http:url_encode(Config#aws_config.access_key_id), "&Signature=", erlcloud_http:url_encode(Sig), "&Expires=", Expires]),
+    {list_to_integer(Expires),
+     binary_to_list(erlang:iolist_to_binary(Host)),
+     binary_to_list(erlang:iolist_to_binary(URI))}.
+
+make_presigned_upload_url(Expire_time, BucketName, Key, ContentType) ->
+  make_presigned_upload_url(Expire_time, BucketName, Key, ContentType, default_config()).
+
+make_presigned_upload_url(Expire_time, BucketName, Key, ContentType, Config) ->
+    EncodedKey = erlcloud_http:url_encode_loose(Key),
+    {Sig, Expires} = sign_put(Expire_time, BucketName, EncodedKey, ContentType, Config),
     Host = lists:flatten([Config#aws_config.s3_scheme, BucketName, ".", Config#aws_config.s3_host, port_spec(Config)]),
     URI = lists:flatten(["/", EncodedKey, "?AWSAccessKeyId=", erlcloud_http:url_encode(Config#aws_config.access_key_id), "&Signature=", erlcloud_http:url_encode(Sig), "&Expires=", Expires]),
     {list_to_integer(Expires),
